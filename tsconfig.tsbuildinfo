@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/components/CountryTable.tsx","./src/components/LazyVisible.tsx","./src/components/SummaryCards.tsx","./src/components/TimeSeriesChart.tsx","./src/components/WorldMap.tsx","./src/data/api.ts","./src/data/db.ts","./src/data/diseases.ts"],"version":"5.9.2"}
