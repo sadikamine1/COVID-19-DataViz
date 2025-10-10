@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { fetchAllData, type CountryAggregates, type TimeSeriesPoint, type MapPoint } from './data/api';
 import { delCache } from './data/db';
 import { CACHE_KEY } from './data/api';
@@ -17,7 +18,8 @@ type DataState = {
   lastUpdated?: Date;
 };
 
-const App: React.FC = () => {
+type AppProps = { forcedDisease?: DiseaseKey };
+const App: React.FC<AppProps> = ({ forcedDisease }) => {
   const [data, setData] = useState<DataState>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -28,9 +30,12 @@ const App: React.FC = () => {
   const [scale, setScale] = useState<'linear' | 'log'>('linear');
   const [diseases, setDiseases] = useState<Partial<Record<DiseaseKey, DiseaseDataset>>>({});
   const [selectedDiseases, setSelectedDiseases] = useState<DiseaseKey[]>([]);
-  const [primaryDisease, setPrimaryDisease] = useState<DiseaseKey>('covid');
+  const [primaryDisease, setPrimaryDisease] = useState<DiseaseKey>(forcedDisease ?? 'covid');
 
   useEffect(() => {
+    if (forcedDisease) {
+      setPrimaryDisease(forcedDisease);
+    }
     const load = async () => {
       try {
         setLoading(true);
@@ -42,11 +47,16 @@ const App: React.FC = () => {
         for (const c of res.countries) {
           if (c.lat != null && c.lng != null) centroids.set(c.country, { lat: c.lat!, lng: c.lng! });
         }
+        console.log('[App] Built centroids map with', centroids.size, 'entries');
         try {
+          console.log('[App] Fetching all diseases...');
           const dsets = await fetchAllDiseases(centroids);
+          console.log('[App] Received disease datasets:', Object.keys(dsets));
           setDiseases(dsets);
           // Default selection: none; user can enable overlays
-        } catch {}
+        } catch (err) {
+          console.error('[App] Failed to fetch diseases:', err);
+        }
         // Heuristic: if any source was local, api.ts logs it; expose a quick check by trying to fetch a known local file
         // Try lightweight ping to detect local dataset presence; ignore if not accessible
         try {
@@ -63,14 +73,20 @@ const App: React.FC = () => {
       }
     };
     load();
-  }, []);
+  }, [forcedDisease]);
 
   const availableYears = useMemo(() => {
-    if (!data) return [] as number[];
     const years = new Set<number>();
-    for (const p of data.series.confirmed) years.add(p.date.getFullYear());
+    if (data) {
+      for (const p of data.series.confirmed) years.add(p.date.getFullYear());
+    }
+    const pd = diseases[primaryDisease];
+    if (pd) {
+      const allSeries = [pd.series.cases, pd.series.deaths, pd.series.hospitalizations, pd.series.recovered];
+      for (const arr of allSeries) for (const p of arr) years.add(p.date.getFullYear());
+    }
     return Array.from(years).sort();
-  }, [data]);
+  }, [data, diseases, primaryDisease]);
 
   const filteredSeries = useMemo(() => {
     if (!data) return { confirmed: [], deaths: [], recovered: [] } as Record<string, TimeSeriesPoint[]>;
@@ -84,35 +100,58 @@ const App: React.FC = () => {
     } as typeof data.series;
   }, [data, year]);
 
-  const totals = useMemo(() => {
-    if (!data) return { confirmed: 0, deaths: 0, recovered: 0 };
-    if (year === 'all') {
-      const last = (key: keyof DataState['series']) => data.series[key]?.at(-1)?.value ?? 0;
-      return {
-        confirmed: last('confirmed'),
-        deaths: last('deaths'),
-        recovered: last('recovered'),
-      };
-    }
+  const diseaseSeriesForMetric = (key: DiseaseKey): TimeSeriesPoint[] => {
+    const ds = diseases[key];
+    if (!ds) return [];
+    const base = metric === 'confirmed' ? ds.series.cases : metric === 'deaths' ? ds.series.deaths : ds.series.recovered;
+    if (year === 'all') return base as any;
     const y = Number(year);
-    const sumYear = (arr: TimeSeriesPoint[]) => arr.reduce((acc,p)=> p.date.getFullYear()===y ? p.value : acc, 0);
-    return {
-      confirmed: sumYear(data.series.confirmed),
-      deaths: sumYear(data.series.deaths),
-      recovered: sumYear(data.series.recovered),
+    return base.filter(p => p.date.getFullYear() === y) as any;
+  };
+
+  const primaryCountries = useMemo(() => {
+    if (primaryDisease === 'covid') return data?.countries ?? [];
+    const ds = diseases[primaryDisease];
+    if (!ds) return [];
+    return ds.countries.map(c => ({ country: c.country, confirmed: c.cases, deaths: c.deaths, recovered: c.recovered, lat: c.lat, lng: c.lng }));
+  }, [data, diseases, primaryDisease]);
+
+  const totals = useMemo(() => {
+    if (primaryDisease === 'covid') {
+      if (!data) return { confirmed: 0, deaths: 0, recovered: 0 };
+      if (year === 'all') {
+        const last = (key: keyof DataState['series']) => data.series[key]?.at(-1)?.value ?? 0;
+        return { confirmed: last('confirmed'), deaths: last('deaths'), recovered: last('recovered') };
+      }
+      const y = Number(year);
+      const sumYear = (arr: TimeSeriesPoint[]) => arr.reduce((acc,p)=> p.date.getFullYear()===y ? acc + p.value : acc, 0);
+      return { confirmed: sumYear(data.series.confirmed), deaths: sumYear(data.series.deaths), recovered: sumYear(data.series.recovered) };
+    }
+    const ds = diseases[primaryDisease];
+    if (!ds) return { confirmed: 0, deaths: 0, recovered: 0 };
+    const pick = (arr: TimeSeriesPoint[]) => {
+      if (year === 'all') return arr.at(-1)?.value ?? 0;
+      const y = Number(year);
+      return arr.reduce((acc, p) => p.date.getFullYear() === y ? acc + p.value : acc, 0);
     };
-  }, [data, year]);
+    return { confirmed: pick(ds.series.cases as any), deaths: pick(ds.series.deaths as any), recovered: pick(ds.series.recovered as any) };
+  }, [data, diseases, primaryDisease, year]);
 
   return (
     <div className="container">
       <header className="header">
         <h1>Global Disease DataViz</h1>
         <div className="header-actions" style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+          <Link to="/" style={{ background: '#0e1626', border: '1px solid #27364a', color: '#d2e0f2', padding: '.35rem .6rem', borderRadius: '.35rem', textDecoration: 'none' }}>Menu</Link>
           <label style={{ fontSize: '.75rem', color: '#9fb4d1' }}>Disease</label>
-          <select value={primaryDisease} onChange={(e)=> setPrimaryDisease(e.target.value as DiseaseKey)}>
-            <option value="covid">COVID-19</option>
-            {Object.entries(diseases).map(([k, ds]) => ds && <option key={k} value={k as DiseaseKey}>{ds.name}</option>)}
-          </select>
+          {forcedDisease ? (
+            <span style={{ color: '#d2e0f2', fontSize: '.9rem' }}>{primaryDisease === 'covid' ? 'COVID-19' : (diseases[primaryDisease]?.name ?? primaryDisease)}</span>
+          ) : (
+            <select value={primaryDisease} onChange={(e)=> setPrimaryDisease(e.target.value as DiseaseKey)}>
+              <option value="covid">COVID-19</option>
+              {Object.entries(diseases).map(([k, ds]) => ds && <option key={k} value={k as DiseaseKey}>{ds.name}</option>)}
+            </select>
+          )}
           <label style={{ fontSize: '.75rem', color: '#9fb4d1' }}>Metric</label>
           <select value={metric} onChange={(e) => setMetric(e.target.value as any)}>
             <option value="confirmed">Confirmed</option>
@@ -124,20 +163,20 @@ const App: React.FC = () => {
             <option value="linear">Linear</option>
             <option value="log">Log</option>
           </select>
-          {Object.keys(diseases).length > 0 && (
+          {!forcedDisease && Object.keys(diseases).length > 0 && (
             <>
               <label style={{ fontSize: '.75rem', color: '#9fb4d1', marginLeft: '.5rem' }}>Overlays</label>
               <select multiple value={selectedDiseases as any} onChange={(e)=> {
                 const opts = Array.from(e.target.selectedOptions).map(o => o.value as DiseaseKey);
                 setSelectedDiseases(opts);
               }} style={{ minWidth: 180, height: 80 }}>
-                {Object.entries(diseases).map(([k, ds]) => ds && (
+                {Object.entries(diseases).map(([k, ds]) => (ds && (k as DiseaseKey) !== primaryDisease) && (
                   <option key={k} value={k}>{ds.name}</option>
                 ))}
               </select>
             </>
           )}
-          <button onClick={async () => { try { await delCache('covid:data:v1'); await delCache(CACHE_KEY); await delCache('disease:data:v1'); } catch {} window.location.reload(); }}>Refresh</button>
+          <button onClick={async () => { try { await delCache('covid:data:v1'); await delCache(CACHE_KEY); await delCache('disease:data:v1'); await delCache('disease:data:v2'); } catch {} window.location.reload(); }}>Refresh</button>
         </div>
       </header>
 
@@ -155,10 +194,10 @@ const App: React.FC = () => {
       {data && (
           <div className="dash">
           <div className="left-col">
-            <SummaryCards totals={totals} lastUpdated={data.lastUpdated} recoveredAvailable={data.series.recovered?.length > 0} titleSuffix={year==='all' ? '' : `(${year})`} />
+            <SummaryCards totals={totals} lastUpdated={data?.lastUpdated} recoveredAvailable={primaryDisease === 'covid' ? (data?.series.recovered?.length ?? 0) > 0 : ((diseases[primaryDisease]?.series.recovered.length ?? 0) > 0)} titleSuffix={year==='all' ? '' : `(${year})`} />
             <section className="panel">
               <h2>Top countries</h2>
-              <CountryTable countries={[...data.countries].sort((a,b)=>b[metric]-a[metric]).slice(0, 40)} metric={metric} />
+              <CountryTable countries={[...primaryCountries].sort((a,b)=>b[metric]-a[metric]).slice(0, 40)} metric={metric} />
             </section>
           </div>
           <div className="center-col">
@@ -210,14 +249,14 @@ const App: React.FC = () => {
                     <TimeSeriesChart
                       multi={[
                         // Primary disease series first
-                        primaryDisease === 'covid' ?
-                          { series: filteredSeries[metric], label: 'COVID-19', color: metric === 'confirmed' ? '#ff4d4f' : metric === 'deaths' ? '#595959' : '#52c41a' } :
-                          (() => {
-                            const ds = diseases[primaryDisease]!;
-                            const color = primaryDisease === 'flu' ? '#d97706' : primaryDisease === 'measles' ? '#f43f5e' : primaryDisease === 'malaria' ? '#22c55e' : primaryDisease === 'tuberculosis' ? '#8b5cf6' : '#999999';
-                            const series = (metric === 'confirmed' ? ds?.series.cases : metric === 'deaths' ? ds?.series.deaths : ds?.series.recovered) ?? [];
-                            return { series, label: ds?.name ?? primaryDisease, color };
-                          })(),
+                        primaryDisease === 'covid'
+                          ? { series: filteredSeries[metric], label: 'COVID-19', color: metric === 'confirmed' ? '#ff4d4f' : metric === 'deaths' ? '#595959' : '#52c41a' }
+                          : (() => {
+                              const ds = diseases[primaryDisease]!;
+                              const color = primaryDisease === 'flu' ? '#d97706' : primaryDisease === 'measles' ? '#f43f5e' : primaryDisease === 'malaria' ? '#22c55e' : primaryDisease === 'tuberculosis' ? '#8b5cf6' : '#999999';
+                              const series = diseaseSeriesForMetric(primaryDisease);
+                              return { series, label: ds?.name ?? primaryDisease, color };
+                            })(),
                         ...selectedDiseases.map(k => {
                           const ds = diseases[k]!;
                           const color =
@@ -225,7 +264,7 @@ const App: React.FC = () => {
                             k === 'measles' ? '#f43f5e' :
                             k === 'malaria' ? '#22c55e' :
                             k === 'tuberculosis' ? '#8b5cf6' : '#999999';
-                          const series = (metric === 'confirmed' ? ds?.series.cases : metric === 'deaths' ? ds?.series.deaths : ds?.series.recovered) ?? [];
+                          const series = diseaseSeriesForMetric(k);
                           return { series, label: ds?.name ?? k, color };
                         })
                       ]}

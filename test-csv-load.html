@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Test CSV Loading</title>
+</head>
+<body>
+  <h1>Disease CSV Test</h1>
+  <button onclick="testLoad()">Test Load CSVs</button>
+  <pre id="output"></pre>
+  
+  <script>
+    async function testLoad() {
+      const output = document.getElementById('output');
+      output.textContent = 'Testing...\n';
+      
+      const base = '/G-PRO-500-NCE-5-1-professionalwork-3/';
+      const files = ['grippe', 'rougeole', 'paludisme', 'tuberculose'];
+      
+      for (const file of files) {
+        try {
+          const url = `${base}maladie/${file}.csv`;
+          output.textContent += `\nFetching: ${url}\n`;
+          
+          const res = await fetch(url, { cache: 'no-store' });
+          output.textContent += `Status: ${res.status}\n`;
+          
+          if (res.ok) {
+            const text = await res.text();
+            output.textContent += `Length: ${text.length} chars\n`;
+            const lines = text.split('\n').slice(0, 3);
+            output.textContent += `First lines:\n${lines.join('\n')}\n`;
+          } else {
+            output.textContent += `ERROR: ${res.statusText}\n`;
+          }
+        } catch (e) {
+          output.textContent += `EXCEPTION: ${e.message}\n`;
+        }
+      }
+      
+      output.textContent += '\n✓ Test complete';
+    }
+  </script>
+</body>
+</html>

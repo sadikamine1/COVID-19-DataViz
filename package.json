@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "node scripts/sync-maladie.mjs && vite",
+    "build": "node scripts/sync-maladie.mjs && tsc -b && vite build",
     "preview": "vite preview --port 5173",
     "predeploy": "npm run build",
     "deploy:gh": "git subtree push --prefix dist origin gh-pages || (git push origin `git subtree split --prefix dist main`:gh-pages --force)"
